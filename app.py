@@ -46,7 +46,14 @@ CLIENT_CONFIG = {
 # ========================================
 DONE_FILE = "/tmp/mailmerge_done.json"
 
-if os.path.exists(DONE_FILE) and not st.session_state.get("done", False):
+if "done" not in st.session_state:
+    st.session_state["done"] = False
+
+# ✅ Prevent accidental restart after successful completion
+if st.session_state["done"]:
+    st.stop()
+
+if os.path.exists(DONE_FILE) and not st.session_state["done"]:
     try:
         with open(DONE_FILE, "r") as f:
             done_info = json.load(f)
@@ -72,11 +79,13 @@ if os.path.exists(DONE_FILE) and not st.session_state.get("done", False):
 # ========================================
 EMAIL_REGEX = re.compile(r"[\w\.-]+@[\w\.-]+\.\w+")
 
+
 def extract_email(value: str):
     if not value:
         return None
     match = EMAIL_REGEX.search(str(value))
     return match.group(0) if match else None
+
 
 def convert_bold(text):
     if not text:
@@ -96,18 +105,24 @@ def convert_bold(text):
     </html>
     """
 
+
 def get_or_create_label(service, label_name="Mail Merge Sent"):
     try:
         labels = service.users().labels().list(userId="me").execute().get("labels", [])
         for label in labels:
             if label["name"].lower() == label_name.lower():
                 return label["id"]
-        label_obj = {"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+        label_obj = {
+            "name": label_name,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        }
         created_label = service.users().labels().create(userId="me", body=label_obj).execute()
         return created_label["id"]
     except Exception as e:
         st.warning(f"Could not get/create label: {e}")
         return None
+
 
 def send_email_backup(service, csv_path):
     try:
@@ -132,6 +147,7 @@ def send_email_backup(service, csv_path):
     except Exception as e:
         st.warning(f"⚠️ Could not send backup email: {e}")
 
+
 def fetch_message_id_header(service, message_id):
     for _ in range(6):
         try:
@@ -146,6 +162,7 @@ def fetch_message_id_header(service, message_id):
             pass
         time.sleep(random.uniform(1, 2))
     return ""
+
 
 # ========================================
 # OAuth Flow
@@ -167,7 +184,9 @@ else:
     else:
         flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES)
         flow.redirect_uri = st.secrets["gmail"]["redirect_uri"]
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+        auth_url, _ = flow.authorization_url(
+            prompt="consent", access_type="offline", include_granted_scopes="true"
+        )
         st.markdown(f"### 🔑 Please [authorize the app]({auth_url}) to send emails using your Gmail account.")
         st.stop()
 
@@ -213,9 +232,7 @@ Thanks,
             height=250,
         )
 
-        # =============================
-        # 👁️ TEMPLATE PREVIEW (added safely)
-        # =============================
+        # 👁️ Template Preview
         if uploaded_file is not None and not df.empty:
             st.markdown("### 👁️ Template Preview")
             try:
@@ -231,20 +248,22 @@ Thanks,
                 st.warning(f"⚠️ Preview unavailable: {e}")
 
         label_name = st.text_input("Gmail label", "Mail Merge Sent")
-        delay = st.slider("Delay (seconds)", 20, 75, 20)
+        delay = st.slider("Delay (seconds)", 20, 75, 25)
 
         send_mode = st.radio("Choose mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
         if st.button("🚀 Send Emails / Save Drafts"):
-            st.session_state.update({
-                "sending": True,
-                "df": df,
-                "subject_template": subject_template,
-                "body_template": body_template,
-                "label_name": label_name,
-                "delay": delay,
-                "send_mode": send_mode
-            })
+            st.session_state.update(
+                {
+                    "sending": True,
+                    "df": df,
+                    "subject_template": subject_template,
+                    "body_template": body_template,
+                    "label_name": label_name,
+                    "delay": delay,
+                    "send_mode": send_mode,
+                }
+            )
             st.rerun()
 
 # ========================================
@@ -344,7 +363,7 @@ if st.session_state["sending"]:
     progress.progress(100)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
+    safe_label = re.sub(r"[^A-Za-z0-9_-]", "_", label_name)
     file_name = f"Updated_{safe_label}_{timestamp}.csv"
     file_path = os.path.join("/tmp", file_name)
     df.to_csv(file_path, index=False)
@@ -359,10 +378,17 @@ if st.session_state["sending"]:
     if os.path.exists("/tmp/mailmerge_running.json"):
         os.remove("/tmp/mailmerge_running.json")
 
-    st.session_state["sending"] = False
-    st.session_state["done"] = True
-    st.session_state["summary"] = {"sent": sent_count, "errors": errors, "skipped": skipped}
-    st.rerun()
+    # ✅ Final stable state - no restart loop
+    st.session_state.update(
+        {
+            "sending": False,
+            "done": True,
+            "summary": {"sent": sent_count, "errors": errors, "skipped": skipped},
+        }
+    )
+    st.success("✅ All emails processed. Preparing summary view...")
+    time.sleep(1)
+    st.experimental_rerun()
 
 # ========================================
 # COMPLETION STATE
@@ -370,24 +396,3 @@ if st.session_state["sending"]:
 if st.session_state["done"]:
     summary = st.session_state.get("summary", {})
     st.success(f"✅ Process completed. Sent: {summary.get('sent', 0)}")
-    if summary.get("errors"):
-        st.error(f"❌ {len(summary['errors'])} errors occurred.")
-    if summary.get("skipped"):
-        st.warning(f"⚠️ Skipped: {summary['skipped']}")
-
-    with open(DONE_FILE, "r") as f:
-        done_info = json.load(f)
-    file_path = done_info.get("file")
-    if file_path and os.path.exists(file_path):
-        st.download_button(
-            "⬇️ Download Updated CSV",
-            data=open(file_path, "rb"),
-            file_name=os.path.basename(file_path),
-            mime="text/csv",
-        )
-
-    if st.button("🔁 New Run / Reset"):
-        if os.path.exists(DONE_FILE):
-            os.remove(DONE_FILE)
-        st.session_state.clear()
-        st.experimental_rerun()
